@@ -1,22 +1,34 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { VideoInfo, TrendingVideo } from "../types";
 
-const makeAI = (apiKey?: string) => {
-  if (!apiKey) {
-    throw new Error("Thiếu Gemini API Key. Hãy truyền apiKey vào hàm.");
-  }
-  return new GoogleGenAI({ apiKey });
+/**
+ * Không dùng .env:
+ * - Ưu tiên window.__GEMINI_API_KEY (set trong index.html)
+ * - Hoặc localStorage "GEMINI_API_KEY"
+ */
+const getApiKey = (): string => {
+  const w = globalThis as any;
+  return (
+    w.__GEMINI_API_KEY ||
+    (typeof localStorage !== "undefined" ? localStorage.getItem("GEMINI_API_KEY") : null) ||
+    ""
+  );
 };
 
-export const fetchTikTokInfo = async (url: string, apiKey: string): Promise<VideoInfo> => {
+const getAI = () => {
+  const key = getApiKey();
+  return key ? new GoogleGenAI({ apiKey: key }) : null;
+};
+
+export const fetchTikTokInfo = async (url: string): Promise<VideoInfo> => {
   try {
-    // 1) Try scraper first
+    // 1) Ưu tiên scraper (không cần key)
     const scraperResponse = await fetch(
       `https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`
     );
     const scraperData = await scraperResponse.json();
 
-    if (scraperData.code === 0 && scraperData.data) {
+    if (scraperData?.code === 0 && scraperData?.data) {
       const d = scraperData.data;
       return {
         id: d.id,
@@ -25,7 +37,7 @@ export const fetchTikTokInfo = async (url: string, apiKey: string): Promise<Vide
         author: d.author?.nickname || "@user",
         avatar:
           d.author?.avatar ||
-          `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${d.author?.id || "user"}`,
+          `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${d.author?.id ?? "user"}`,
         cover: d.cover || d.origin_cover,
         musicTitle: d.music_info?.title || "Original Sound",
         duration: formatDuration(d.duration),
@@ -35,8 +47,25 @@ export const fetchTikTokInfo = async (url: string, apiKey: string): Promise<Vide
       };
     }
 
-    // 2) Fallback Gemini
-    const ai = makeAI(apiKey);
+    // 2) Nếu scraper fail, mới dùng Gemini (nếu có key)
+    const ai = getAI();
+    if (!ai) {
+      // Không có key → trả fallback tối thiểu (không throw để khỏi “die” app)
+      return {
+        id: "unknown",
+        url,
+        title: "TikTok Video",
+        author: "@user",
+        avatar: `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=user`,
+        cover: `https://picsum.photos/seed/${encodeURIComponent(url)}/600/800`,
+        musicTitle: "Original Sound",
+        duration: "00:00",
+        videoUrl: "",
+        audioUrl: "",
+        timestamp: Date.now(),
+      };
+    }
+
     const geminiResponse = await ai.models.generateContent({
       model: "gemini-3-pro-preview",
       contents: `Phân tích link TikTok này và trả về metadata thực tế: ${url}.`,
@@ -58,6 +87,7 @@ export const fetchTikTokInfo = async (url: string, apiKey: string): Promise<Vide
     });
 
     const gData = JSON.parse(geminiResponse.text);
+
     return {
       ...gData,
       url,
@@ -72,9 +102,14 @@ export const fetchTikTokInfo = async (url: string, apiKey: string): Promise<Vide
   }
 };
 
-export const fetchTrendingVideos = async (apiKey: string): Promise<TrendingVideo[]> => {
+/**
+ * QUAN TRỌNG: phải export đúng tên để App.tsx import được
+ */
+export const fetchTrendingVideos = async (): Promise<TrendingVideo[]> => {
   try {
-    const ai = makeAI(apiKey);
+    const ai = getAI();
+    if (!ai) throw new Error("Missing API key");
+
     const response = await ai.models.generateContent({
       model: "gemini-3-pro-preview",
       contents:
@@ -105,11 +140,36 @@ export const fetchTrendingVideos = async (apiKey: string): Promise<TrendingVideo
     }));
   } catch (error) {
     console.error("Error fetching trending:", error);
+    // Fallback nếu AI fail / không có key
     return [
-      { title: "#ViralDance2024", author: "@dancer_pro", url: "https://www.tiktok.com/@dancer_pro/video/1", views: "12M", cover: "https://picsum.photos/seed/dance/600/900" },
-      { title: "Tech Gadgets You Need", author: "@techreview", url: "https://www.tiktok.com/@techreview/video/2", views: "8.5M", cover: "https://picsum.photos/seed/tech/600/900" },
-      { title: "ASMR Cooking", author: "@chef_asmr", url: "https://www.tiktok.com/@chef_asmr/video/3", views: "4.1M", cover: "https://picsum.photos/seed/food/600/900" },
-      { title: "Gaming Setup 2024", author: "@gamer_neon", url: "https://www.tiktok.com/@gamer_neon/video/4", views: "15M", cover: "https://picsum.photos/seed/gaming/600/900" },
+      {
+        title: "#ViralDance2024",
+        author: "@dancer_pro",
+        url: "https://www.tiktok.com/@dancer_pro/video/1",
+        views: "12M",
+        cover: "https://picsum.photos/seed/dance/600/900",
+      },
+      {
+        title: "Tech Gadgets You Need",
+        author: "@techreview",
+        url: "https://www.tiktok.com/@techreview/video/2",
+        views: "8.5M",
+        cover: "https://picsum.photos/seed/tech/600/900",
+      },
+      {
+        title: "ASMR Cooking",
+        author: "@chef_asmr",
+        url: "https://www.tiktok.com/@chef_asmr/video/3",
+        views: "4.1M",
+        cover: "https://picsum.photos/seed/food/600/900",
+      },
+      {
+        title: "Gaming Setup 2024",
+        author: "@gamer_neon",
+        url: "https://www.tiktok.com/@gamer_neon/video/4",
+        views: "15M",
+        cover: "https://picsum.photos/seed/gaming/600/900",
+      },
     ];
   }
 };
